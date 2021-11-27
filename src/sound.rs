@@ -1,11 +1,11 @@
 use blip_buf::BlipBuf;
 
 const WAVE_PATTERN : [[i32; 8]; 4] = [[-1,-1,-1,-1,1,-1,-1,-1],[-1,-1,-1,-1,1,1,-1,-1],[-1,-1,1,1,1,1,-1,-1],[1,1,1,1,-1,-1,1,1]];
-const CLOCKS_PER_SECOND : u32 = 1 << 22;
+pub const CLOCKS_PER_SECOND : u32 = 1 << 22;
 const OUTPUT_SAMPLE_COUNT : usize = 2000; // this should be less than blip_buf::MAX_FRAME
 
-pub trait AudioPlayer : Send {
-    fn play(&mut self, left_channel: &[f32], right_channel: &[f32]);
+pub trait AudioPlayer {
+    fn play(&mut self, left_channel: &[f32], right_channel: &[f32], buffer_wave_start: Option<usize>);
     fn samples_rate(&self) -> u32;
     fn underflowed(&self) -> bool;
 }
@@ -80,6 +80,7 @@ struct SquareChannel {
     sweep_frequency_increase: bool,
     volume_envelope: VolumeEnvelope,
     blip: BlipBuf,
+    wave_start: Option<u32>,
 }
 
 impl SquareChannel {
@@ -103,6 +104,7 @@ impl SquareChannel {
             sweep_frequency_increase: false,
             volume_envelope: VolumeEnvelope::new(),
             blip: blip,
+            wave_start: None,
         }
     }
 
@@ -167,6 +169,10 @@ impl SquareChannel {
             let vol = self.volume_envelope.volume as i32;
 
             while time < end_time {
+                if self.phase == 0 {
+                    // Set it only once, for the first candidate sample.
+                    self.wave_start.get_or_insert(time);
+                }
                 let amp = vol * pattern[self.phase as usize];
                 if amp != self.last_amp {
                     self.blip.add_delta(time, amp - self.last_amp);
@@ -242,6 +248,7 @@ struct WaveChannel {
     waveram: [u8; 32],
     current_wave: u8,
     blip: BlipBuf,
+    wave_start: Option<u32>,
 }
 
 impl WaveChannel {
@@ -260,6 +267,7 @@ impl WaveChannel {
             waveram: [0; 32],
             current_wave: 0,
             blip: blip,
+            wave_start: None,
         }
     }
 
@@ -327,6 +335,10 @@ impl WaveChannel {
             };
 
             while time < end_time {
+                if self.current_wave == 0 {
+                    // Set it only once, for the first candidate sample.
+                    self.wave_start.get_or_insert(time);
+                }
                 let sample = self.waveram[self.current_wave as usize];
 
                 // shifted by 2 so that 25% does not lose precision
@@ -466,7 +478,7 @@ pub struct Sound {
     prev_time: u32,
     next_time: u32,
     time_divider: u8,
-    output_period: u32,
+    _output_period: u32,
     channel1: SquareChannel,
     channel2: SquareChannel,
     channel3: WaveChannel,
@@ -493,7 +505,7 @@ impl Sound {
             prev_time: 0,
             next_time: CLOCKS_PER_SECOND / 256,
             time_divider: 0,
-            output_period: output_period as u32,
+            _output_period: output_period as u32,
             channel1: SquareChannel::new(blipbuf1, true),
             channel2: SquareChannel::new(blipbuf2, false),
             channel3: WaveChannel::new(blipbuf3),
@@ -551,9 +563,9 @@ impl Sound {
 
         self.time += cycles;
 
-        if self.time >= self.output_period {
+        // if self.time >= self.output_period {
             self.do_output();
-        }
+        // }
     }
 
     pub fn sync(&mut self) {
@@ -623,6 +635,18 @@ impl Sound {
         debug_assert!(sample_count == self.channel3.blip.samples_avail() as usize);
         debug_assert!(sample_count == self.channel4.blip.samples_avail() as usize);
 
+        // FIXME: This cound end up switching alignment source often.
+        //        selecting the first enabled channel could work better.
+        let mut buffer_wave_start = 
+            self.channel1.wave_start.take()
+            .or(self.channel2.wave_start.take())
+            .or(self.channel3.wave_start.take())
+            .map(|s|
+                (s as f32
+                    * self.player.samples_rate() as f32
+                    / CLOCKS_PER_SECOND as f32
+                    ) as usize);
+
         let mut outputted = 0;
 
         let left_vol = (self.volume_left as f32 / 7.0) * (1.0 / 15.0) * 0.25;
@@ -679,7 +703,7 @@ impl Sound {
             debug_assert!(count1 == count3);
             debug_assert!(count1 == count4);
 
-            self.player.play(&buf_left[..count1], &buf_right[..count1]);
+            self.player.play(&buf_left[..count1], &buf_right[..count1], buffer_wave_start.take());
 
             outputted += count1;
         }
