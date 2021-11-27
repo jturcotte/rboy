@@ -4,6 +4,8 @@
 pub use crate::keypad::KeypadKey;
 pub use crate::gpu::{SCREEN_W, SCREEN_H};
 pub use crate::sound::AudioPlayer;
+pub use crate::sound::VizChunk;
+pub use crate::sound::Sound;
 
 pub mod device;
 

@@ -10,8 +10,8 @@ const SWEEP_DELAY_ZERO_PERIOD : u8 = 8;
 // need 4 since we run the wave after delay == 0, instead of at delay == 0
 const WAVE_INITIAL_DELAY : u32 = 4;
 
-pub trait AudioPlayer : Send {
-    fn play(&mut self, left_channel: &[f32], right_channel: &[f32]);
+pub trait AudioPlayer {
+    fn play(&mut self, left_channel: &[f32], right_channel: &[f32], viz_chunk: VizChunk);
     fn samples_rate(&self) -> u32;
     fn underflowed(&self) -> bool;
 }
@@ -152,6 +152,7 @@ struct SquareChannel {
     sweep_did_negate: bool,
     volume_envelope: VolumeEnvelope,
     blip: BlipBuf,
+    wave_start: Vec<usize>,
 }
 
 impl SquareChannel {
@@ -176,7 +177,13 @@ impl SquareChannel {
             sweep_did_negate: false,
             volume_envelope: VolumeEnvelope::new(),
             blip: blip,
+            wave_start: Vec::new(),
         }
+    }
+
+    pub fn chan_state(&self) -> (Option<f64>, u8) {
+        let freq_hz = 131072.0 / (2048 - self.frequency) as f64;
+        (Some(freq_hz), if self.active { self.volume_envelope.volume } else { 0 })
     }
 
     fn on(&self) -> bool {
@@ -284,6 +291,9 @@ impl SquareChannel {
             let vol = self.volume_envelope.volume as i32;
 
             while time < end_time {
+                if self.phase == 0 {
+                    self.wave_start.push(time as usize);
+                }
                 let amp = vol * pattern[self.phase as usize];
                 if amp != self.last_amp {
                     self.blip.add_delta(time, amp - self.last_amp);
@@ -362,6 +372,7 @@ struct WaveChannel {
     dmg_mode: bool,
     sample_recently_accessed: bool,
     blip: BlipBuf,
+    wave_start: Vec<usize>,
 }
 
 impl WaveChannel {
@@ -380,7 +391,20 @@ impl WaveChannel {
             dmg_mode: dmg_mode,
             sample_recently_accessed: false,
             blip: blip,
+            wave_start: Vec::new(),
         }
+    }
+
+    fn chan_state(&self) -> (Option<f64>, u8) {
+        let freq_hz = 65536.0 / (2048 - self.frequency) as f64;
+        let vol = match self.volume_shift {
+            0 => 0,
+            1 => 15,
+            2 => 8,
+            3 => 4,
+            _ => unreachable!(),
+        };
+        (Some(freq_hz), if self.active { vol } else { 0 })
     }
 
     fn rb(&self, a: u16) -> u8 {
@@ -498,6 +522,9 @@ impl WaveChannel {
             };
 
             while time < end_time {
+                if self.current_wave == 0 {
+                    self.wave_start.push(time as usize);
+                }
                 let wavebyte = self.waveram[self.current_wave as usize >> 1];
                 let sample = if self.current_wave % 2 == 0 { wavebyte >> 4 } else { wavebyte & 0xF };
 
@@ -582,6 +609,10 @@ impl NoiseChannel {
             last_amp: 0,
             blip: blip,
         }
+    }
+
+    pub fn chan_state(&self) -> (Option<f64>, u8) {
+        (None, if self.active { self.volume_envelope.volume } else { 0 })
     }
 
     fn rb(&self, a: u16) -> u8 {
@@ -678,13 +709,27 @@ impl NoiseChannel {
     }
 }
 
+pub struct VizChunk {
+    pub channels: [Vec<f32>; 4],
+    pub wave_start_offsets: [Vec<usize>; 3],
+}
+
+impl VizChunk {
+    pub fn new(samples: usize) -> VizChunk {
+        VizChunk{
+            channels: [vec![0f32; samples], vec![0f32; samples], vec![0f32; samples], vec![0f32; samples]],
+            wave_start_offsets: [Vec::new(), Vec::new(), Vec::new()],
+        }
+    }
+}
+
 pub struct Sound {
     on: bool,
     time: u32,
     prev_time: u32,
     next_time: u32,
     frame_step: u8,
-    output_period: u32,
+    _output_period: u32,
     channel1: SquareChannel,
     channel2: SquareChannel,
     channel3: WaveChannel,
@@ -721,7 +766,7 @@ impl Sound {
             prev_time: 0,
             next_time: CLOCKS_PER_FRAME,
             frame_step: 0,
-            output_period: output_period as u32,
+            _output_period: output_period as u32,
             channel1: SquareChannel::new(blipbuf1, true),
             channel2: SquareChannel::new(blipbuf2, false),
             channel3: WaveChannel::new(blipbuf3, dmg_mode),
@@ -734,6 +779,15 @@ impl Sound {
             dmg_mode: dmg_mode,
             player: player,
         }
+    }
+
+    pub fn chan_states(&self) -> [(Option<f64>, u8); 4] {
+        [
+            self.channel1.chan_state(),
+            self.channel2.chan_state(),
+            self.channel3.chan_state(),
+            self.channel4.chan_state(),
+        ]
     }
 
    pub fn rb(&mut self, a: u16) -> u8 {
@@ -812,9 +866,9 @@ impl Sound {
 
         self.time += cycles;
 
-        if self.time >= self.output_period {
+        // if self.time >= self.output_period {
             self.do_output();
-        }
+        // }
     }
 
     pub fn sync(&mut self) {
@@ -886,17 +940,26 @@ impl Sound {
         debug_assert!(sample_count == self.channel3.blip.samples_avail() as usize);
         debug_assert!(sample_count == self.channel4.blip.samples_avail() as usize);
 
-        let mut outputted = 0;
+        let clock_to_sample = self.player.samples_rate() as f64 / CLOCKS_PER_SECOND as f64;
+        let to_buffer_sample_index =
+            |s: usize| (s as f64 * clock_to_sample) as usize;
 
         let left_vol = (self.volume_left as f32 / 7.0) * (1.0 / 15.0) * 0.25;
         let right_vol = (self.volume_right as f32 / 7.0) * (1.0 / 15.0) * 0.25;
+        let viz_vol = left_vol.max(right_vol);
 
-        while outputted < sample_count {
+        // while outputted < sample_count
+        {
             let buf_left = &mut [0f32; OUTPUT_SAMPLE_COUNT + 10];
             let buf_right = &mut [0f32; OUTPUT_SAMPLE_COUNT + 10];
             let buf = &mut [0i16; OUTPUT_SAMPLE_COUNT + 10];
 
             let count1 = self.channel1.blip.read_samples(buf, false);
+            // Assume that we didn't generate enough cycles to fill OUTPUT_SAMPLE_COUNT.
+            // Needed since we completely drain the wave_start Vecs.
+            assert!(count1 == sample_count);
+            let mut viz_chunk = VizChunk::new(count1);
+
             for (i, v) in buf[..count1].iter().enumerate() {
                 if self.reg_ff25 & 0x10 == 0x10 {
                     buf_left[i] += *v as f32 * left_vol;
@@ -904,7 +967,12 @@ impl Sound {
                 if self.reg_ff25 & 0x01 == 0x01 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                viz_chunk.channels[0][i] = *v as f32 * viz_vol;
             }
+            viz_chunk.wave_start_offsets[0] = self.channel1.wave_start
+                .drain(..)
+                .map(to_buffer_sample_index)
+                .collect();
 
             let count2 = self.channel2.blip.read_samples(buf, false);
             for (i, v) in buf[..count2].iter().enumerate() {
@@ -914,7 +982,12 @@ impl Sound {
                 if self.reg_ff25 & 0x02 == 0x02 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                viz_chunk.channels[1][i] = *v as f32 * viz_vol;
             }
+            viz_chunk.wave_start_offsets[1] = self.channel2.wave_start
+                .drain(..)
+                .map(to_buffer_sample_index)
+                .collect();
 
             // channel3 is the WaveChannel, that outputs samples with a 4x
             // increase in amplitude in order to avoid a loss of precision.
@@ -926,7 +999,12 @@ impl Sound {
                 if self.reg_ff25 & 0x04 == 0x04 {
                     buf_right[i] += ((*v as f32) / 4.0) * right_vol;
                 }
+                viz_chunk.channels[2][i] = ((*v as f32) / 4.0) * viz_vol;
             }
+            viz_chunk.wave_start_offsets[2] = self.channel3.wave_start
+                .drain(..)
+                .map(to_buffer_sample_index)
+                .collect();
 
             let count4 = self.channel4.blip.read_samples(buf, false);
             for (i, v) in buf[..count4].iter().enumerate() {
@@ -936,15 +1014,14 @@ impl Sound {
                 if self.reg_ff25 & 0x08 == 0x08 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                viz_chunk.channels[3][i] = *v as f32 * viz_vol;
             }
 
             debug_assert!(count1 == count2);
             debug_assert!(count1 == count3);
             debug_assert!(count1 == count4);
 
-            self.player.play(&buf_left[..count1], &buf_right[..count1]);
-
-            outputted += count1;
+            self.player.play(&buf_left[..count1], &buf_right[..count1], viz_chunk);
         }
     }
 
