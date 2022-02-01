@@ -108,6 +108,11 @@ impl SquareChannel {
         }
     }
 
+    pub fn chan_state(&self) -> (Option<f64>, u8) {
+        let freq_hz = 131072.0 / (2048 - self.frequency) as f64;
+        (Some(freq_hz), if self.enabled { self.volume_envelope.volume } else { 0 })
+    }
+
     fn on(&self) -> bool {
         self.enabled
     }
@@ -271,6 +276,18 @@ impl WaveChannel {
         }
     }
 
+    fn chan_state(&self) -> (Option<f64>, u8) {
+        let freq_hz = 65536.0 / (2048 - self.frequency) as f64;
+        let vol = match self.volume_shift {
+            0 => 0,
+            1 => 15,
+            2 => 8,
+            3 => 4,
+            _ => unreachable!(),
+        };
+        (Some(freq_hz), if self.enabled { vol } else { 0 })
+    }
+
     fn wb(&mut self, a: u16, v: u8) {
         match a {
             0xFF1A => {
@@ -399,6 +416,10 @@ impl NoiseChannel {
         }
     }
 
+    pub fn chan_state(&self) -> (Option<f64>, u8) {
+        (None, if self.enabled { self.volume_envelope.volume } else { 0 })
+    }
+
     fn wb(&mut self, a: u16, v: u8) {
         match a {
             0xFF20 => self.new_length = 64 - (v & 0x3F),
@@ -515,6 +536,15 @@ impl Sound {
             need_sync: false,
             player: player,
         }
+    }
+
+    pub fn chan_states(&self) -> [(Option<f64>, u8); 4] {
+        [
+            self.channel1.chan_state(),
+            self.channel2.chan_state(),
+            self.channel3.chan_state(),
+            self.channel4.chan_state(),
+        ]
     }
 
    pub fn rb(&mut self, a: u16) -> u8 {
