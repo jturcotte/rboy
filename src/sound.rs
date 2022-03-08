@@ -5,7 +5,7 @@ pub const CLOCKS_PER_SECOND : u32 = 1 << 22;
 const OUTPUT_SAMPLE_COUNT : usize = 2000; // this should be less than blip_buf::MAX_FRAME
 
 pub trait AudioPlayer {
-    fn play(&mut self, left_channel: &[f32], right_channel: &[f32], buffer_wave_start: Option<usize>);
+    fn play(&mut self, left_channel: &[f32], right_channel: &[f32], viz_channel: &[f32]);
     fn samples_rate(&self) -> u32;
     fn underflowed(&self) -> bool;
 }
@@ -665,29 +665,27 @@ impl Sound {
         debug_assert!(sample_count == self.channel3.blip.samples_avail() as usize);
         debug_assert!(sample_count == self.channel4.blip.samples_avail() as usize);
 
-        // FIXME: This cound end up switching alignment source often.
-        //        selecting the first enabled channel could work better.
-        let mut buffer_wave_start = 
-            self.channel1.wave_start.take()
-            .or(self.channel2.wave_start.take())
-            .or(self.channel3.wave_start.take())
-            .map(|s|
-                (s as f32
-                    * self.player.samples_rate() as f32
-                    / CLOCKS_PER_SECOND as f32
-                    ) as usize);
+        let sample_rate = self.player.samples_rate() as f32;
+        let to_buffer_sample_index =
+            |s| (s as f32 * sample_rate / CLOCKS_PER_SECOND as f32 ) as usize;
 
         let mut outputted = 0;
 
         let left_vol = (self.volume_left as f32 / 7.0) * (1.0 / 15.0) * 0.25;
         let right_vol = (self.volume_right as f32 / 7.0) * (1.0 / 15.0) * 0.25;
+        let viz_vol = left_vol.max(right_vol);
 
         while outputted < sample_count {
             let buf_left = &mut [0f32; OUTPUT_SAMPLE_COUNT + 10];
             let buf_right = &mut [0f32; OUTPUT_SAMPLE_COUNT + 10];
+            let buf_viz = &mut [0f32; OUTPUT_SAMPLE_COUNT + 10];
             let buf = &mut [0i16; OUTPUT_SAMPLE_COUNT + 10];
 
             let count1 = self.channel1.blip.read_samples(buf, false);
+            let s1 = self.channel1.wave_start
+                .take()
+                .map(to_buffer_sample_index)
+                .unwrap_or(0);
             for (i, v) in buf[..count1].iter().enumerate() {
                 if self.registerdata[0x15] & 0x01 == 0x01 {
                     buf_left[i] += *v as f32 * left_vol;
@@ -695,9 +693,16 @@ impl Sound {
                 if self.registerdata[0x15] & 0x10 == 0x10 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                if i >= s1 as usize {
+                    buf_viz[i - s1 as usize] += *v as f32 * viz_vol;
+                }
             }
 
             let count2 = self.channel2.blip.read_samples(buf, false);
+            let s2 = self.channel2.wave_start
+                .take()
+                .map(to_buffer_sample_index)
+                .unwrap_or(0);
             for (i, v) in buf[..count2].iter().enumerate() {
                 if self.registerdata[0x15] & 0x02 == 0x02 {
                     buf_left[i] += *v as f32 * left_vol;
@@ -705,17 +710,27 @@ impl Sound {
                 if self.registerdata[0x15] & 0x20 == 0x20 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                if i >= s2 as usize {
+                    buf_viz[i - s2 as usize] += *v as f32 * viz_vol;
+                }
             }
 
             // channel3 is the WaveChannel, that outputs samples with a 4x
             // increase in amplitude in order to avoid a loss of precision.
             let count3 = self.channel3.blip.read_samples(buf, false);
+            let s3 = self.channel3.wave_start
+                .take()
+                .map(to_buffer_sample_index)
+                .unwrap_or(0);
             for (i, v) in buf[..count3].iter().enumerate() {
                 if self.registerdata[0x15] & 0x04 == 0x04 {
                     buf_left[i] += ((*v as f32) / 4.0) * left_vol;
                 }
                 if self.registerdata[0x15] & 0x40 == 0x40 {
                     buf_right[i] += ((*v as f32) / 4.0) * right_vol;
+                }
+                if i >= s3 as usize {
+                    buf_viz[i - s3 as usize] += ((*v as f32) / 4.0) * viz_vol;
                 }
             }
 
@@ -727,13 +742,14 @@ impl Sound {
                 if self.registerdata[0x15] & 0x80 == 0x80 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
+                buf_viz[i] += *v as f32 * viz_vol;
             }
 
             debug_assert!(count1 == count2);
             debug_assert!(count1 == count3);
             debug_assert!(count1 == count4);
 
-            self.player.play(&buf_left[..count1], &buf_right[..count1], buffer_wave_start.take());
+            self.player.play(&buf_left[..count1], &buf_right[..count1], &buf_viz[..count1]);
 
             outputted += count1;
         }
