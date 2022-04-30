@@ -682,6 +682,10 @@ impl Sound {
             let buf = &mut [0i16; OUTPUT_SAMPLE_COUNT + 10];
 
             let count1 = self.channel1.blip.read_samples(buf, false);
+            // The waveform alignment currently only process one frame at a time and just stops
+            // plotting one of the channels if the wave starts too far from the buffer start.
+            // For that reason just take half of that buffer until something more reliable happens.
+            let viz_count = count1 / 2;
             let s1 = self.channel1.wave_start
                 .take()
                 .map(to_buffer_sample_index)
@@ -693,7 +697,7 @@ impl Sound {
                 if self.registerdata[0x15] & 0x10 == 0x10 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
-                if i >= s1 as usize {
+                if i >= s1 as usize && i - s1 < viz_count {
                     buf_viz[i - s1 as usize] += *v as f32 * viz_vol;
                 }
             }
@@ -710,7 +714,7 @@ impl Sound {
                 if self.registerdata[0x15] & 0x20 == 0x20 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
-                if i >= s2 as usize {
+                if i >= s2 as usize && i - s2 < viz_count {
                     buf_viz[i - s2 as usize] += *v as f32 * viz_vol;
                 }
             }
@@ -729,7 +733,7 @@ impl Sound {
                 if self.registerdata[0x15] & 0x40 == 0x40 {
                     buf_right[i] += ((*v as f32) / 4.0) * right_vol;
                 }
-                if i >= s3 as usize {
+                if i >= s3 as usize && i - s3 < viz_count {
                     buf_viz[i - s3 as usize] += ((*v as f32) / 4.0) * viz_vol;
                 }
             }
@@ -742,14 +746,16 @@ impl Sound {
                 if self.registerdata[0x15] & 0x80 == 0x80 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
-                buf_viz[i] += *v as f32 * viz_vol;
+                if i < viz_count {
+                    buf_viz[i] += *v as f32 * viz_vol;
+                }
             }
 
             debug_assert!(count1 == count2);
             debug_assert!(count1 == count3);
             debug_assert!(count1 == count4);
 
-            self.player.play(&buf_left[..count1], &buf_right[..count1], &buf_viz[..count1]);
+            self.player.play(&buf_left[..count1], &buf_right[..count1], &buf_viz[..viz_count]);
 
             outputted += count1;
         }
