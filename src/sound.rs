@@ -698,10 +698,10 @@ impl Sound {
             let mut viz_chunk = VizChunk::new(count1);
 
             for (i, v) in buf[..count1].iter().enumerate() {
-                if self.registerdata[0x15] & 0x01 == 0x01 {
+                if self.registerdata[0x15] & 0x10 == 0x10 {
                     buf_left[i] += *v as f32 * left_vol;
                 }
-                if self.registerdata[0x15] & 0x10 == 0x10 {
+                if self.registerdata[0x15] & 0x01 == 0x01 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
                 viz_chunk.channels[0][i] = *v as f32 * viz_vol;
@@ -713,10 +713,10 @@ impl Sound {
 
             let count2 = self.channel2.blip.read_samples(buf, false);
             for (i, v) in buf[..count2].iter().enumerate() {
-                if self.registerdata[0x15] & 0x02 == 0x02 {
+                if self.registerdata[0x15] & 0x20 == 0x20 {
                     buf_left[i] += *v as f32 * left_vol;
                 }
-                if self.registerdata[0x15] & 0x20 == 0x20 {
+                if self.registerdata[0x15] & 0x02 == 0x02 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
                 viz_chunk.channels[1][i] = *v as f32 * viz_vol;
@@ -730,10 +730,10 @@ impl Sound {
             // increase in amplitude in order to avoid a loss of precision.
             let count3 = self.channel3.blip.read_samples(buf, false);
             for (i, v) in buf[..count3].iter().enumerate() {
-                if self.registerdata[0x15] & 0x04 == 0x04 {
+                if self.registerdata[0x15] & 0x40 == 0x40 {
                     buf_left[i] += ((*v as f32) / 4.0) * left_vol;
                 }
-                if self.registerdata[0x15] & 0x40 == 0x40 {
+                if self.registerdata[0x15] & 0x04 == 0x04 {
                     buf_right[i] += ((*v as f32) / 4.0) * right_vol;
                 }
                 viz_chunk.channels[2][i] = ((*v as f32) / 4.0) * viz_vol;
@@ -745,10 +745,10 @@ impl Sound {
 
             let count4 = self.channel4.blip.read_samples(buf, false);
             for (i, v) in buf[..count4].iter().enumerate() {
-                if self.registerdata[0x15] & 0x08 == 0x08 {
+                if self.registerdata[0x15] & 0x80 == 0x80 {
                     buf_left[i] += *v as f32 * left_vol;
                 }
-                if self.registerdata[0x15] & 0x80 == 0x80 {
+                if self.registerdata[0x15] & 0x08 == 0x08 {
                     buf_right[i] += *v as f32 * right_vol;
                 }
                 viz_chunk.channels[3][i] = *v as f32 * viz_vol;
