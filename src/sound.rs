@@ -291,7 +291,7 @@ impl SquareChannel {
             let vol = self.volume_envelope.volume as i32;
 
             while time < end_time {
-                if self.phase == 0 {
+                if self.phase == 0 && vol > 0 {
                     self.wave_start.push(time as usize);
                 }
                 let amp = vol * pattern[self.phase as usize];
@@ -522,7 +522,7 @@ impl WaveChannel {
             };
 
             while time < end_time {
-                if self.current_wave == 0 {
+                if self.current_wave == 0 && self.volume_shift > 0 {
                     self.wave_start.push(time as usize);
                 }
                 let wavebyte = self.waveram[self.current_wave as usize >> 1];
